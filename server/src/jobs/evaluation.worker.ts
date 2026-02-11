@@ -3,23 +3,21 @@ import { redis } from '../utils/redis';
 import { db } from '../db';
 import { videoAnswers, questions, evaluations, applicants } from '../db/schema';
 import { eq } from 'drizzle-orm';
-import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import 'dotenv/config';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 interface EvaluationJobData {
   applicantId: number;
 }
 
 interface DetailedScores {
-  passion: number;          // 熱意・志望動機
-  businessPlan: number;     // 事業計画の具体性
-  vision: number;           // ビジョン・将来性
-  problemSolving: number;   // 課題認識・解決力
-  strength: number;         // 強み・差別化
+  passion: number;
+  businessPlan: number;
+  vision: number;
+  problemSolving: number;
+  strength: number;
 }
 
 interface EvaluationResult {
@@ -39,7 +37,7 @@ const EVALUATION_PROMPT = `あなたはSNS版「令和の虎」の審査員AIで
 5. strength (強み・差別化): 自身の強みを理解し、事業に活かせるか
 
 【出力形式】
-以下のJSON形式で出力してください:
+以下のJSON形式のみを出力してください。他の説明文は不要です:
 {
   "totalScore": <5項目の平均点(整数)>,
   "detailedScores": {
@@ -56,7 +54,6 @@ const EVALUATION_PROMPT = `あなたはSNS版「令和の虎」の審査員AIで
 `;
 
 async function evaluateApplicant(applicantId: number): Promise<EvaluationResult> {
-  // Get all transcriptions for this applicant
   const answers = await db
     .select({
       transcription: videoAnswers.transcription,
@@ -68,32 +65,26 @@ async function evaluateApplicant(applicantId: number): Promise<EvaluationResult>
     .where(eq(videoAnswers.applicantId, applicantId))
     .orderBy(questions.orderNumber);
 
-  // Format transcriptions
   const transcriptionsText = answers
     .map((a, i) => `質問${i + 1}: ${a.questionText}\n回答: ${a.transcription || '(回答なし)'}`)
     .join('\n\n');
 
   const prompt = EVALUATION_PROMPT + transcriptionsText;
 
-  const response = await openai.chat.completions.create({
-    model: 'gpt-4-turbo-preview',
-    messages: [
-      {
-        role: 'system',
-        content: 'あなたは公平で厳格な審査員です。JSONのみを出力してください。',
-      },
-      {
-        role: 'user',
-        content: prompt,
-      },
-    ],
-    response_format: { type: 'json_object' },
-    temperature: 0.3,
+  // Use Gemini 1.5 Pro for evaluation
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-1.5-pro',
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0.3,
+    },
   });
 
-  const content = response.choices[0].message.content;
+  const result = await model.generateContent(prompt);
+  const content = result.response.text();
+
   if (!content) {
-    throw new Error('No content in OpenAI response');
+    throw new Error('No content in Gemini response');
   }
 
   return JSON.parse(content) as EvaluationResult;
@@ -106,20 +97,17 @@ const worker = new Worker<EvaluationJobData>(
 
     console.log(`Processing evaluation for applicant ${applicantId}`);
 
-    // Check if evaluation already exists
     const existing = await db
       .select()
       .from(evaluations)
       .where(eq(evaluations.applicantId, applicantId));
 
     if (existing.length > 0) {
-      // Update status to processing
       await db
         .update(evaluations)
         .set({ evaluationStatus: 'processing' })
         .where(eq(evaluations.applicantId, applicantId));
     } else {
-      // Create new evaluation record
       await db.insert(evaluations).values({
         applicantId,
         evaluationStatus: 'processing',
@@ -129,7 +117,6 @@ const worker = new Worker<EvaluationJobData>(
     try {
       const result = await evaluateApplicant(applicantId);
 
-      // Update evaluation
       await db
         .update(evaluations)
         .set({
@@ -140,7 +127,6 @@ const worker = new Worker<EvaluationJobData>(
         })
         .where(eq(evaluations.applicantId, applicantId));
 
-      // Update applicant status
       await db
         .update(applicants)
         .set({ status: 'evaluated' })

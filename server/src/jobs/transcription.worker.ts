@@ -2,14 +2,12 @@ import { Worker, Job } from 'bullmq';
 import { redis } from '../utils/redis';
 import { db } from '../db';
 import { videoAnswers, questions } from '../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { evaluationQueue } from './queues';
-import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import 'dotenv/config';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 interface TranscriptionJobData {
   videoAnswerId: number;
@@ -19,25 +17,31 @@ interface TranscriptionJobData {
 }
 
 async function transcribeVideo(videoUrl: string): Promise<string> {
-  // Download video from S3 and transcribe using Whisper
-  // For production, you'd download the video and send to Whisper API
-  // Here we'll use a simplified approach with the URL
-
   try {
     // Fetch video from URL
     const response = await fetch(videoUrl);
-    const blob = await response.blob();
+    const arrayBuffer = await response.arrayBuffer();
+    const base64Video = Buffer.from(arrayBuffer).toString('base64');
 
-    // Create a File object for OpenAI
-    const file = new File([blob], 'video.webm', { type: 'video/webm' });
+    // Use Gemini 1.5 Flash for video transcription
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
-    const transcription = await openai.audio.transcriptions.create({
-      file: file,
-      model: 'whisper-1',
-      language: 'ja',
-    });
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          mimeType: 'video/webm',
+          data: base64Video,
+        },
+      },
+      {
+        text: `この動画の音声を正確に文字起こししてください。
+話者が言った言葉をそのまま書き起こしてください。
+説明や解釈は不要です。音声の内容のみを出力してください。`,
+      },
+    ]);
 
-    return transcription.text;
+    const transcription = result.response.text();
+    return transcription;
   } catch (error) {
     console.error('Transcription error:', error);
     throw error;
@@ -52,7 +56,6 @@ async function checkAllTranscriptionsComplete(applicantId: number): Promise<bool
 
   const allQuestions = await db.select().from(questions);
 
-  // Check if all required questions have completed transcriptions
   const completedCount = answers.filter(
     a => a.transcriptionStatus === 'completed'
   ).length;
@@ -67,7 +70,6 @@ const worker = new Worker<TranscriptionJobData>(
 
     console.log(`Processing transcription for video answer ${videoAnswerId}`);
 
-    // Update status to processing
     await db
       .update(videoAnswers)
       .set({ transcriptionStatus: 'processing' })
@@ -76,7 +78,6 @@ const worker = new Worker<TranscriptionJobData>(
     try {
       const transcription = await transcribeVideo(videoUrl);
 
-      // Update with transcription result
       await db
         .update(videoAnswers)
         .set({
@@ -87,7 +88,6 @@ const worker = new Worker<TranscriptionJobData>(
 
       console.log(`Transcription completed for video answer ${videoAnswerId}`);
 
-      // Check if all transcriptions are complete
       const allComplete = await checkAllTranscriptionsComplete(applicantId);
 
       if (allComplete) {
