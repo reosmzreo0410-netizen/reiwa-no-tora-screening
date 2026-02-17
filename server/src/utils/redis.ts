@@ -1,13 +1,13 @@
 import Redis from 'ioredis';
 import 'dotenv/config';
 
-const redisHost = process.env.REDIS_HOST || 'localhost';
-const redisPort = parseInt(process.env.REDIS_PORT || '6379', 10);
+// Upstash Redis URL (TLS enabled)
+const redisUrl = process.env.REDIS_URL;
 
-export const redis = new Redis({
-  host: redisHost,
-  port: redisPort,
+export const redis = new Redis(redisUrl || 'redis://localhost:6379', {
   maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+  tls: redisUrl?.startsWith('rediss://') ? {} : undefined,
 });
 
 redis.on('error', (err) => {

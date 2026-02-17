@@ -3,15 +3,17 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
 import 'dotenv/config';
 
+// Cloudflare R2 configuration (S3 compatible)
 const s3Client = new S3Client({
-  region: process.env.AWS_REGION || 'ap-northeast-1',
+  region: 'auto',
+  endpoint: process.env.R2_ENDPOINT,
   credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+    accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
   },
 });
 
-const bucketName = process.env.S3_BUCKET_NAME || '';
+const bucketName = process.env.R2_BUCKET_NAME || 'reiwatora';
 
 export async function uploadVideoToS3(
   buffer: Buffer,
@@ -31,7 +33,8 @@ export async function uploadVideoToS3(
 
   await s3Client.send(command);
 
-  return `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+  // Return the public URL (R2 public access needs to be enabled for this)
+  return `${process.env.R2_ENDPOINT}/${bucketName}/${key}`;
 }
 
 export async function getSignedVideoUrl(key: string): Promise<string> {
